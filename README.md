@@ -33,14 +33,18 @@
   /></a>
 </p>
 
-<h3 align="center">Before I go to bed, I tell my agents: good night, have fun.</h3>
+<h3 align="center">Before I go to bed, I tell my agents:</h3>
+<h3 align="center">good night, have fun</h3>
 
-You have a backlog of improvements you'll never get to. Tests that need writing, complexity that needs reducing, types that need fixing. You could spend a Saturday on it, or you could hand it to a coding agent and go to sleep.
+<p align="center">
+  <img src="docs/splash.png" alt="gnhf — Good Night, Have Fun" width="720">
+</p>
 
-gnhf is an orchestrator that runs your coding agent in a loop — each iteration makes one small, committed, documented change towards an objective. You wake up to a branch full of clean work and a log of everything that happened.
+gnhf is an orchestrator that keeps your agents running while you sleep — it starts a [ralph loop](https://ghuntley.com/ralph/) where each iteration makes one small, committed, documented change towards an objective.
+You wake up to a branch full of clean work and a log of everything that happened.
 
-- **Set it and forget it** — one command starts an autonomous loop that runs until you Ctrl+C
-- **Safe by design** — each iteration is committed on success, rolled back on failure, with exponential backoff and auto-abort after consecutive failures
+- **Dead simple** — one command starts an autonomous loop that runs until you Ctrl+C
+- **Autonomous by design** — each iteration is committed on success, rolled back on failure, with exponential backoff and auto-abort after consecutive failures
 - **Agent-agnostic** — works with Claude Code or Codex out of the box
 
 ## Quick Start
