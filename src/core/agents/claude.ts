@@ -17,6 +17,7 @@ import {
 interface ClaudeAssistantEvent {
   type: "assistant";
   message: {
+    id?: string;
     usage: {
       input_tokens: number;
       output_tokens: number;
@@ -121,6 +122,40 @@ function buildClaudeArgs(prompt: string, extraArgs?: string[]): string[] {
   ];
 }
 
+function toTokenUsage(usage: {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}): TokenUsage {
+  return {
+    inputTokens:
+      (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+    outputTokens: usage.output_tokens ?? 0,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+  };
+}
+
+function isSameUsage(a: TokenUsage, b: TokenUsage): boolean {
+  return (
+    a.inputTokens === b.inputTokens &&
+    a.outputTokens === b.outputTokens &&
+    a.cacheReadTokens === b.cacheReadTokens &&
+    a.cacheCreationTokens === b.cacheCreationTokens
+  );
+}
+
+function extendsUsage(next: TokenUsage, previous: TokenUsage): boolean {
+  return (
+    next.inputTokens >= previous.inputTokens &&
+    next.outputTokens >= previous.outputTokens &&
+    next.cacheReadTokens >= previous.cacheReadTokens &&
+    next.cacheCreationTokens >= previous.cacheCreationTokens &&
+    !isSameUsage(next, previous)
+  );
+}
+
 export class ClaudeAgent implements Agent {
   name = "claude";
 
@@ -167,17 +202,83 @@ export class ClaudeAgent implements Agent {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
       };
+      const usageByMessageId = new Map<string, TokenUsage>();
+      let anonymousAssistantCount = 0;
+      let lastAnonymousAssistantId: string | null = null;
+      let lastAnonymousAssistantUsage: TokenUsage | null = null;
+      let pendingAnonymousAssistantUsage: TokenUsage | null = null;
 
       parseJSONLStream<ClaudeEvent>(child.stdout!, logStream, (event) => {
         if (event.type === "assistant") {
           const msg = (event as ClaudeAssistantEvent).message;
-          cumulative.inputTokens +=
-            (msg.usage.input_tokens ?? 0) +
-            (msg.usage.cache_read_input_tokens ?? 0);
-          cumulative.outputTokens += msg.usage.output_tokens ?? 0;
-          cumulative.cacheReadTokens += msg.usage.cache_read_input_tokens ?? 0;
-          cumulative.cacheCreationTokens +=
-            msg.usage.cache_creation_input_tokens ?? 0;
+          const nextUsage = toTokenUsage(msg.usage);
+          let messageId = msg.id;
+          let previousUsage: TokenUsage | undefined;
+
+          if (messageId) {
+            previousUsage = usageByMessageId.get(messageId);
+            lastAnonymousAssistantId = null;
+            lastAnonymousAssistantUsage = null;
+            pendingAnonymousAssistantUsage = null;
+          } else if (
+            pendingAnonymousAssistantUsage &&
+            extendsUsage(nextUsage, pendingAnonymousAssistantUsage)
+          ) {
+            messageId = `assistant-${anonymousAssistantCount++}`;
+            previousUsage = pendingAnonymousAssistantUsage;
+            cumulative.inputTokens +=
+              pendingAnonymousAssistantUsage.inputTokens;
+            cumulative.outputTokens +=
+              pendingAnonymousAssistantUsage.outputTokens;
+            cumulative.cacheReadTokens +=
+              pendingAnonymousAssistantUsage.cacheReadTokens;
+            cumulative.cacheCreationTokens +=
+              pendingAnonymousAssistantUsage.cacheCreationTokens;
+            usageByMessageId.set(messageId, pendingAnonymousAssistantUsage);
+            pendingAnonymousAssistantUsage = null;
+            lastAnonymousAssistantId = messageId;
+            lastAnonymousAssistantUsage = nextUsage;
+          } else if (
+            lastAnonymousAssistantId &&
+            lastAnonymousAssistantUsage &&
+            extendsUsage(nextUsage, lastAnonymousAssistantUsage)
+          ) {
+            messageId = lastAnonymousAssistantId;
+            previousUsage = usageByMessageId.get(messageId);
+            pendingAnonymousAssistantUsage = null;
+            lastAnonymousAssistantUsage = nextUsage;
+          } else if (
+            lastAnonymousAssistantId &&
+            lastAnonymousAssistantUsage &&
+            isSameUsage(nextUsage, lastAnonymousAssistantUsage)
+          ) {
+            messageId = lastAnonymousAssistantId;
+            previousUsage = usageByMessageId.get(messageId);
+            pendingAnonymousAssistantUsage ??= nextUsage;
+          } else {
+            messageId = `assistant-${anonymousAssistantCount++}`;
+            pendingAnonymousAssistantUsage = null;
+            lastAnonymousAssistantId = messageId;
+            lastAnonymousAssistantUsage = nextUsage;
+          }
+
+          if (previousUsage) {
+            cumulative.inputTokens +=
+              nextUsage.inputTokens - previousUsage.inputTokens;
+            cumulative.outputTokens +=
+              nextUsage.outputTokens - previousUsage.outputTokens;
+            cumulative.cacheReadTokens +=
+              nextUsage.cacheReadTokens - previousUsage.cacheReadTokens;
+            cumulative.cacheCreationTokens +=
+              nextUsage.cacheCreationTokens - previousUsage.cacheCreationTokens;
+          } else {
+            cumulative.inputTokens += nextUsage.inputTokens;
+            cumulative.outputTokens += nextUsage.outputTokens;
+            cumulative.cacheReadTokens += nextUsage.cacheReadTokens;
+            cumulative.cacheCreationTokens += nextUsage.cacheCreationTokens;
+          }
+
+          usageByMessageId.set(messageId, nextUsage);
           onUsage?.({ ...cumulative });
 
           if (onMessage) {
@@ -220,15 +321,7 @@ export class ClaudeAgent implements Agent {
         }
 
         const output: AgentOutput = resultEvent.structured_output;
-        const usage: TokenUsage = {
-          inputTokens:
-            (resultEvent.usage.input_tokens ?? 0) +
-            (resultEvent.usage.cache_read_input_tokens ?? 0),
-          outputTokens: resultEvent.usage.output_tokens ?? 0,
-          cacheReadTokens: resultEvent.usage.cache_read_input_tokens ?? 0,
-          cacheCreationTokens:
-            resultEvent.usage.cache_creation_input_tokens ?? 0,
-        };
+        const usage = toTokenUsage(resultEvent.usage);
 
         onUsage?.(usage);
         resolve({ output, usage });

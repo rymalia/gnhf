@@ -309,6 +309,349 @@ describe("ClaudeAgent", () => {
     await promise;
   });
 
+  it("does not double count repeated assistant events for the same message id", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const onUsage = vi.fn();
+
+    const promise = agent.run("prompt", "/cwd", { onUsage });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        id: "msg-1",
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        id: "msg-1",
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        id: "msg-2",
+        usage: {
+          input_tokens: 1,
+          output_tokens: 3,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 1,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "result",
+      subtype: "success",
+      usage: {
+        input_tokens: 7,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 4,
+        output_tokens: 20,
+      },
+      structured_output: {
+        success: true,
+        summary: "done",
+        key_changes_made: [],
+        key_learnings: [],
+      },
+    });
+
+    proc.emit("close", 0);
+    await promise;
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(2, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(3, {
+      inputTokens: 37,
+      outputTokens: 11,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 4,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(4, {
+      inputTokens: 37,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 4,
+    });
+  });
+
+  it("does not double count repeated assistant events without a message id", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const onUsage = vi.fn();
+
+    const promise = agent.run("prompt", "/cwd", { onUsage });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 1,
+          output_tokens: 3,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 1,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "result",
+      subtype: "success",
+      usage: {
+        input_tokens: 7,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 4,
+        output_tokens: 20,
+      },
+      structured_output: {
+        success: true,
+        summary: "done",
+        key_changes_made: [],
+        key_learnings: [],
+      },
+    });
+
+    proc.emit("close", 0);
+    await promise;
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(2, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(3, {
+      inputTokens: 37,
+      outputTokens: 11,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 4,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(4, {
+      inputTokens: 37,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 4,
+    });
+  });
+
+  it("does not double count evolving assistant snapshots without a message id", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const onUsage = vi.fn();
+
+    const promise = agent.run("prompt", "/cwd", { onUsage });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "hel" }],
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "hello" }],
+        usage: {
+          input_tokens: 6,
+          output_tokens: 10,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "result",
+      subtype: "success",
+      usage: {
+        input_tokens: 6,
+        cache_read_input_tokens: 10,
+        cache_creation_input_tokens: 3,
+        output_tokens: 10,
+      },
+      structured_output: {
+        success: true,
+        summary: "done",
+        key_changes_made: [],
+        key_learnings: [],
+      },
+    });
+
+    proc.emit("close", 0);
+    await promise;
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(2, {
+      inputTokens: 16,
+      outputTokens: 10,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(3, {
+      inputTokens: 16,
+      outputTokens: 10,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+  });
+
+  it("recovers cumulative usage for distinct anonymous turns when payloads match", async () => {
+    const proc = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const onUsage = vi.fn();
+
+    const promise = agent.run("prompt", "/cwd", { onUsage });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 6,
+          output_tokens: 8,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 3,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 12,
+          output_tokens: 16,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 6,
+        },
+      },
+    });
+
+    emitLine(proc, {
+      type: "result",
+      subtype: "success",
+      usage: {
+        input_tokens: 18,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 9,
+        output_tokens: 24,
+      },
+      structured_output: {
+        success: true,
+        summary: "done",
+        key_changes_made: [],
+        key_learnings: [],
+      },
+    });
+
+    proc.emit("close", 0);
+    await promise;
+
+    expect(onUsage).toHaveBeenNthCalledWith(1, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(2, {
+      inputTokens: 16,
+      outputTokens: 8,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 3,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(3, {
+      inputTokens: 48,
+      outputTokens: 24,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 9,
+    });
+    expect(onUsage).toHaveBeenNthCalledWith(4, {
+      inputTokens: 48,
+      outputTokens: 24,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 9,
+    });
+  });
+
   it("rejects when process exits with non-zero code", async () => {
     const proc = createMockProcess();
     mockSpawn.mockReturnValue(proc);

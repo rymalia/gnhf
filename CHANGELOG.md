@@ -2,10 +2,9 @@
 
 ## [0.1.21](https://github.com/kunchenguid/gnhf/compare/gnhf-v0.1.20...gnhf-v0.1.21) (2026-04-17)
 
-
 ### Features
 
-* add live terminal title updates ([#70](https://github.com/kunchenguid/gnhf/issues/70)) ([f8b57d6](https://github.com/kunchenguid/gnhf/commit/f8b57d6a7640cff457f3d399b4aa1b44bb37abbe))
+- add live terminal title updates ([#70](https://github.com/kunchenguid/gnhf/issues/70)) ([f8b57d6](https://github.com/kunchenguid/gnhf/commit/f8b57d6a7640cff457f3d399b4aa1b44bb37abbe))
 
 ## [0.1.20](https://github.com/kunchenguid/gnhf/compare/gnhf-v0.1.19...gnhf-v0.1.20) (2026-04-17)
 
@@ -85,6 +84,7 @@
 ### Bug Fixes
 
 - **agents:** support Windows cmd/bat agent wrappers and terminate overridden agent processes cleanly
+- **agents:** deduplicate repeated Claude assistant usage snapshots so live token totals and max-token enforcement stay accurate
 - **cli:** keep the final interactive TUI visible after aborted runs until the user exits
 - **core:** harden git command execution so commit messages, branch names, and worktree paths are passed without shell interpretation
 - **renderer:** keep wide Unicode graphemes wrapped and aligned in the live terminal UI
