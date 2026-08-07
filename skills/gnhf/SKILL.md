@@ -5,208 +5,198 @@ description: Use when the user asks to run GNHF, says they are going to sleep or
 
 # GNHF
 
-## Overview
+gnhf is an agent orchestrator: it invokes a coding agent in a loop — one fresh,
+**stateless** invocation per iteration, ending in exactly one commit on success or a
+hard rollback on failure — until a natural-language stop condition is met. Three facts
+shape everything below:
 
-GNHF is an agent orchestrator: it repeatedly calls another coding agent until a natural-language stop condition is met. This skill teaches the host agent to prepare one durable run and, in Companion mode, steer or review it.
+- **gnhf performs the commits, the worker judges the stop condition, and `notes.md` is
+  the only cross-iteration memory — and it is lossy.** Every iteration re-reads the
+  prompt; nothing else survives reliably. This is why the prompt is the product.
+- **Statelessness is paid for in input tokens**: empirically ~500K tokens/iteration at
+  a small-repo size, 98% input, growing with the codebase. `--max-tokens` is best read
+  as a work-timer (~12M ≈ one hour), not a task count.
+- **gnhf has no quota awareness, no rate-limit handling, and no agent fallback**
+  (verified against source). All limit strategy is the host's.
 
-Core rule: the host agent orchestrates; GNHF executes. Do not manually implement inside the same scope while a GNHF worker is responsible for it unless the user explicitly changes the delegation.
+The stop layers, in intended order: `--stop-when` is the real ending → 3 consecutive
+failures catches stuck runs → `--max-iterations` catches trivial non-progress → the
+token cap is the spend backstop (the only one that kills mid-iteration). Caps prevent
+runaway *spend*, not productive-looking *drift* — drift is contained by prompt
+tightness and by landing on a review-before-merge branch, never by a flag.
 
-In Companion mode, GNHF completion is not user acceptance. "Stop condition met" only means the worker stopped; the host still compares the result to the user's latest requirements and fresh verification.
+Full incident evidence, when it exists on this machine (proceed on this file alone if
+not): `~/projects/docs/gnhf-guide.md` (operational failures, minutes 2026-07-29) and
+`~/projects/standup/docs/planning/gnhf-runs/run-01-retrospective.md` (the
+defect-gradient study).
 
-## Modes
+## Mode
 
-Choose exactly one mode for the run.
+Pick one per run.
 
-### Hands-Off
+- **Hands-Off** — bounded task, clear verification, user leaving. Prepare the prompt,
+  launch, let the durable monitoring layer watch it, report after exit. Intervene only
+  for hard failure, runaway scope, or destructive behavior.
+- **Companion** — uncertain, exploratory, or multi-round work; the user is (or will be)
+  around. The host supervises checkpoints, steers with bounded relaunches, and treats
+  each round of findings as the next acceptance criteria. Prefer a new bounded gnhf
+  prompt over manually taking over the worker's scope.
 
-Use when the task is bounded, verification is clear, and the user wants one configured run to proceed without steering.
+Either way: **"stop condition met" is the worker's opinion, not acceptance.** The host
+always re-verifies before presenting the result as done.
 
-- Prepare a precise prompt with constraints, non-goals, verification, and stop condition.
-- Launch GNHF and wait for completion.
-- Intervene early only for hard failure, runaway scope, destructive behavior, or impossible prerequisites.
-- Report the final GNHF status after exit.
+## Launch — the run must not live in the harness's process tree
 
-Examples:
+A run inside an agent's process tree dies with the agent's turn (observed: background
+Bash tasks killed mid-work when a provider limit aborted the turn). Two equally valid
+launch patterns:
 
-- English: "I'm going to bed. Use GNHF with Copilot to keep working on this branch and stop when the test suite passes."
-- Chinese: "我要睡了。用 GNHF 接着跑这个分支，测试都过了就停。"
+1. **User-launched** (simplest when the user is present): hand them the exact command
+   to run in their own terminal; the host then monitors. Survivability is free.
+2. **Agent-launched**: detached tmux, one launcher script per run so a reroute is a
+   one-line edit. Keep the prompt in its own file — heredocs inside `$( )` break under
+   `/bin/sh`.
 
-### Companion
+   ```bash
+   tmux new-session -d -s gnhf-<name> -c <dir> "sh <launcher.sh> >> <log> 2>&1"
+   ```
 
-Use when the task is uncertain, exploratory, design-heavy, research-heavy, or likely to need course correction.
+Flags that matter: `--agent`, `--max-iterations` (the runaway guard), `--stop-when`,
+`--max-tokens`, `--prevent-sleep on`, `--current-branch` only when asked (default is a
+`gnhf/` branch; `--worktree` for parallel runs), `--push` stays off,
+`--meteor-frequency 0` for quieter logs. Don't invent flags; check `gnhf --help` if
+unsure.
 
-Default to Companion when the user asks to iterate until satisfied, requests multi-round work, provides review findings, asks for design/skill/documentation improvement, or asks for supervision.
+Before launch: clean tree (gnhf requires it), right branch/worktree, and in any
+fork-flow repo `git branch --unset-upstream` so a bare push cannot reach upstream.
 
-- Keep a note of original intent, branch, session id, and last known result.
-- Poll the active GNHF process until exit or until an intervention point appears.
-- Intervene when the worker optimizes the wrong thing, repeats failed fixes, skips requested research, drifts scope, or claims success without evidence.
-- Treat review findings as the next acceptance criteria.
-- Prefer a new bounded GNHF prompt over manually taking over implementation.
+Agent choice: `--agent codex` is the standing preference; `~/.gnhf/config.yml` carries
+the model override that activates with it — but note the config's *default* agent is
+`claude`, which is a resume trap (below). Split parallel tracks **by verifiability**:
+fully-testable work to unattended tracks; work with visual/manual acceptance criteria
+can only ever end code-complete, and its prompt must produce a written morning test
+plan instead of claiming success.
 
-Examples:
+## The prompt is the product — the defect gradient
 
-- English: "Run GNHF for a few rounds on this onboarding flow. Check the diff between rounds and tighten the next prompt if it starts polishing the wrong thing."
-- Chinese: "用 GNHF 多跑几轮这个 onboarding 流程。每轮看一下 diff，如果它开始改偏了，就收窄下一轮 prompt。"
+Run-01's measured result: **defects cluster inversely with prompt precision.** The
+itemized layer came out clean across 54 amnesiac iterations; the "gestured-at" layers
+collected every bug; the Hard Constraints section had 100% compliance. Spend prompt
+effort accordingly:
 
-## Operational rails (read before launching anything unattended)
+- **Itemize what matters.** A numbered list with the rule quoted beats a paragraph
+  that gestures. If a layer gets four bullets, expect its bugs.
+- **Hard Constraints section** for anything load-bearing — it's the highest-compliance
+  real estate in the file. Bans (deferred concepts, forbidden deps, forbidden
+  commands) go here with the reason stated.
+- **INVARIANTS section** for cross-cutting rules, because notes.md is not reliable
+  memory and invariants decay at integration seams. Phrase as per-iteration
+  obligations: "every new X must be checked against Y and added to Y's regression test
+  in the same iteration."
+- **Externally-pinned gates.** The worker must not author the gate it is graded by
+  (a real worker wrote a tsconfig that silently excluded a package, then honestly
+  reported green every iteration after). State gates as exact commands with expected
+  scope, and require new packages/modules to join the gate in the iteration that
+  creates them.
+- **Falsifiable tests.** "A rule test must be able to fail; if a rule is enforced
+  structurally, test at the layer where the two concepts meet." Otherwise you get
+  coverage theater.
+- **Checklist-backed stop condition**, never prose. Bad: "supports the full flow."
+  Good: a maintained checklist file mapping every numbered requirement to the control
+  and test that proves it; stop = every row checked. The worker judges `--stop-when`,
+  so an ambiguous one *will* be read generously.
+- **An adversarial final lap**: when the stop condition appears met, spend one
+  iteration attacking boundary cases before declaring it.
+- **Re-read triggers** for spec-heavy areas ("before touching X, re-read spec §N") —
+  requirements referenced indirectly degrade over the run's lifetime; requirements in
+  the prompt don't.
+- **An ambiguity outlet**: conservative reading + record the question in a
+  QUESTIONS.md + move on. Cheap, high-value morning review targets.
+- **Self-contained.** The Codex worker sees AGENTS.md, never CLAUDE.md; anything that
+  must bind it lives in the prompt or AGENTS.md. State authorization overrides in so
+  many words (e.g. commits allowed despite a repo rule), or the worker obeys the repo
+  and produces nothing.
+- **Blocked ≠ failed**: "if a task requires a forbidden action, document it with
+  evidence and move on; never fake success."
+- **Continuation-safe phrasing** ("continue from the current repo state") so the run
+  can be resumed or rerouted to another agent by editing `--agent` in its launcher.
 
-Full reference, with the incident evidence behind each rule:
-**[/Users/rymalia/projects/docs/gnhf-guide.md](/Users/rymalia/projects/docs/gnhf-guide.md)**
+## Reading a live run — the log is the only truth
 
-Five rules that were learned the expensive way. Do not rediscover them.
-
-1. **Launch in detached tmux, never as a background Bash task.** Background tasks get
-   killed mid-work.
-   `tmux new-session -d -s gnhf-<name> -c <worktree> "sh <launcher> >> <log> 2>&1"`
-2. **A finished run is indistinguishable from a hung one by process inspection.** gnhf keeps
-   its TUI alive after completing, so it stays alive, burns CPU, refreshes its log mtime, and
-   has no worker child. **Read the log before judging:**
-   `strings <log> | grep -nE "stop condition|You've hit your|limit"` —
-   `stop condition` = finished (grep the short phrase; the TUI wraps mid-word),
-   a limit message = blocked not hung, neither = actually hung.
-   Progress is **commit count + notes-file mtime moving**; nothing else counts.
-3. **gnhf has no quota awareness and no agent fallback** (verified against source). Use
-   `codexbar guard --provider <p> --min-remaining N` to gate, and note two traps: Codex has
-   **no session window** (guard it on `weekly`), and codexbar **cannot see the Claude monthly
-   spend limit** — only the run's own log catches that.
-4. **Run the watchdog from launchd, not from inside an agent turn.** A supervising agent that
-   gets blocked stops recording, so the outage becomes invisible.
-   `~/projects/scripts/gnhf-watchdog.sh` + `com.rymalia.gnhf-watchdog.plist`.
-5. **Never trust the run's own notes.** Re-run the suites yourself, reproduce one
-   falsification, and check scope structurally (`git show --name-only`,
-   `git branch -r --contains HEAD`).
-
-Write prompts **continuation-safe** ("continue from the current repo state") so a run can be
-rerouted to another agent by editing `--agent` in its launcher and relaunching.
-
-## Launch
-
-Check the installed CLI before relying on flags:
-
-```bash
-gnhf --help
-```
-
-Known shape:
-
-```bash
-gnhf \
-  --agent <agent> \
-  --max-iterations <n> \
-  --stop-when "<observable completion condition>" \
-  --prevent-sleep on \
-  "<worker prompt>"
-```
-
-If GNHF has no `--model` flag, put model requirements in the worker prompt or backend config. Do not invent unsupported flags.
-
-Before launch:
-
-```bash
-git status --short
-git branch --show-current
-git log --oneline --max-count=5
-```
-
-Prompt skeleton:
-
-```text
-Objective: <one concrete outcome>.
-
-Use <agent/model requirement>. Work in this repo. Treat this as a long-running GNHF task.
-
-Before coding, inspect the current repo, relevant docs, and recent commits. Preserve user changes. Do not make unrelated refactors.
-
-After each meaningful slice, run relevant verification. If blocked, commit no fake success; leave notes with the blocker and evidence.
-
-Stop only when: <observable completion condition>.
-```
-
-## Steer
-
-In Companion mode, evaluate after each iteration or meaningful output chunk:
-
-| Signal                                                        | Action                                                               |
-| ------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Worker found a real blocker                                   | Stop or relaunch with blocker-specific instructions                  |
-| Good partial slice                                            | Let it continue or tighten the next stop condition                   |
-| Skipped requested research                                    | Relaunch with research as explicit first deliverable                 |
-| Worker changes unrelated files                                | Stop and review before continuing                                    |
-| Worker claims success without verification                    | Review immediately; relaunch only with evidence-based stop condition |
-| Reviewer finds a blocking issue or user says not satisfactory | Relaunch with that finding as the sole bounded correction            |
-
-Steering prompt:
-
-```text
-Continue from the current repo state. The previous run partially succeeded: <evidence>.
-
-Do not redo completed work. Focus only on <bounded correction>.
-
-The issue to fix now is <specific observed issue>. Verify with <commands/checks>.
-
-Stop only when <observable condition>.
-```
-
-## Companion Review
-
-Use only in Companion mode, when the host is supervising quality or deciding whether to continue with another bounded run.
-
-1. Inspect branch, status, commits, changed files, and diff.
-2. Read GNHF notes/logs as claims, not evidence.
-3. Run independent verification: tests, lint, build, typecheck, manual QA, or domain-specific checks.
-4. Compare the result to the stop condition and the user's latest feedback.
-5. Decide: **Mergeable**, **Needs follow-up GNHF run**, or **Do not merge**.
-
-If the result needs follow-up, continue in Companion mode instead of presenting the run as complete. Do not merge unless explicitly authorized.
-
-## Findings
-
-Use when the user provides findings such as "not preserved", "scope drift", "missing requirement", or "why did you stop".
-
-1. Treat the run as Companion mode.
-2. Convert each finding into an observable correction. Preserve severity, file/line scope, and the user's wording.
-3. Relaunch on the same candidate branch when salvageable.
-4. Prompt the worker to fix only the bounded finding, preserve completed valid work, verify, and stop only when the finding is no longer true.
-5. Review again after the follow-up.
-6. Repeat until no blocking findings remain, verification passes, or a real blocker is found.
-
-## Morning Review
-
-Use when the user returns with "good morning", "how did last night's run go?", or similar after a GNHF run.
-
-Do not ask what to review first. Reconstruct state:
+**A finished run is indistinguishable from a hung one by process inspection.** After
+finishing, gnhf keeps its TUI alive: process up, CPU burning, log mtime fresh, no
+worker child. Every cheap signal lies. Judge only by:
 
 ```bash
-tmux ls || true
-sh ~/projects/scripts/gnhf-watchdog.sh          # or: tail -100 ~/.gnhf-watchdog/watchdog.log
-grep SUMMARY ~/.gnhf-watchdog/watchdog.log      # whole night, one screen
-git status --short
-git branch --show-current
-git log --oneline --decorate --max-count=20
+strings <log> | tail -c 200000 | grep -nE "stop condition|You've hit your|limit"
 ```
 
-Then, per run, check the **log** before concluding anything about a process that looks idle
-(see Operational rails #2) — an alive process with no worker child is most often a run that
-*finished*, and a run that produced nothing was most often *blocked by a provider limit*
-whose message is sitting in its own log.
+- `stop condition` → **finished** (grep the short phrase — the TUI wraps mid-word, and
+  one real run's log ended at `stop condition m`).
+- a limit message → **blocked**, not hung; won't recover until the window resets.
+- neither, with no worker child and no commit/notes movement → **actually hung**.
 
-Inspect likely GNHF branches, notes, logs, terminal sessions, and changed files. If a GNHF process is still running, report that first.
+Progress = **commit count + notes-file mtime moving between checks**. Nothing else
+counts. Logs are append-only across relaunches (scan the tail, or an old limit message
+reports "blocked" forever) and full of ANSI escapes (`strings`, not `tail`).
 
-Report mode, agent, branch, status, changes, verification, stop-condition result, quality assessment, and recommended next action. Never summarize an overnight run from memory.
+Durable monitoring must live outside agent turns — a supervising agent that gets
+blocked stops recording, silently. If this machine has the watchdog
+(`~/projects/scripts/gnhf-watchdog.sh` + its launchd plist), register the run and load
+it; in-session polling is then the interactive supplement, and the first thing to read
+after any gap is the watchdog log (`grep SUMMARY ~/.gnhf-watchdog/watchdog.log`), not
+the process table. Without the watchdog, fall back to log inspection and accept the
+blind spots. Quota gating via `codexbar guard` helps but has two verified holes: Codex
+has no session window (guard it on `weekly`), and codexbar cannot see the Claude
+monthly spend limit — only the run's own log catches that one.
 
-## Agent
+## Resume and reroute
 
-The supported `--agent` roster comes from `gnhf --help`; the [Agents table](/Users/rymalia/projects/gnhf/README.md#agents) in the GNHF README owns per-agent requirements. Do not hard-code the roster.
+- **The iteration counter is cumulative across resumes** (`startIteration` in the
+  log); `--max-iterations` counts against the cumulative total — **raise the cap on
+  every resume**. The token counter resets per process, so a re-passed `--max-tokens`
+  is a fresh budget.
+- **Re-pass `--agent` and all caps every time.** Only `--stop-when` persists per run;
+  the config default agent is `claude`, so a bare `gnhf` resume silently switches a
+  codex run to Claude.
+- **Re-piping the identical prompt is the cleanest resume** — gnhf detects the match
+  and continues the same branch and numbering without interrogation. An interrupted
+  iteration rolls back cleanly.
+- **Reroute** = kill the tmux session, edit `--agent` in the launcher, relaunch; the
+  new agent picks up from committed state. This is what continuation-safe prompts buy.
 
-- Default to the agent the user explicitly requested, or the one already configured and authenticated locally.
-- `codex`: repo-aware code work or review-heavy tasks.
-- `claude`: reasoning-heavy implementation or prose-heavy planning when configured.
-- `acp:<target>`: when the user wants to drive a custom ACP-compatible agent through GNHF.
+## Review — never trust the run's own notes
+
+Workers self-report optimistically, and every independent check below has caught a
+real problem at least once:
+
+1. Read the exit state from the **log** first (finished vs blocked vs iteration-cap —
+   a finished-looking TUI is not stop-condition evidence), then notes and any
+   QUESTIONS.md, then `git log --oneline <base>..HEAD` for the narrative.
+2. **Re-run the suites yourself.** Never quote the worker's counts.
+3. **Reproduce one falsification**: break the thing a key test guards (or run the test
+   at the pre-fix commit) and watch it go red. An unfalsified assertion is worse than
+   none.
+4. **Check scope structurally**, not by claim: `git show --name-only` against expected
+   files, build artifacts, attribution trailers, `git branch -r --contains HEAD`
+   (should be empty).
+5. **Run an independent adversarial review** over `git diff <base>...` — it is the
+   layer the loop cannot provide for itself and has caught 100% of the serious
+   findings in real runs — then **verify the reviewer's findings too**; a finding you
+   can't reproduce is a finding to drop.
+6. Decide: **Mergeable** / **Needs a follow-up bounded run** / **Do not merge**. Never
+   merge without explicit authorization. Reword gnhf's own commit subjects
+   (`gnhf 1: …`) before anything becomes a PR.
+
+When the user returns with findings, convert each into an observable correction
+(preserve their wording and scope), relaunch on the same branch with the finding as
+the sole bounded objective and an evidence-based stop condition, and review again.
+Anything unverifiable overnight (UI, hardware) is labelled **unverified** with a
+written test plan, not claimed.
 
 ## Safety
 
-- Preserve user changes. Never run destructive git commands to clean up a GNHF branch.
-- In Companion mode, do not trust a worker's success summary without fresh verification.
-- Keep prompts outcome-based and evidence-based.
-- Use concrete stop conditions. Bad: "looks good". Good: "the target workflow succeeds, relevant checks pass, and no unrelated files changed."
-- If the user is away, produce branches and a status report, not irreversible changes, unless explicitly authorized.
+- Preserve user changes; no destructive git against a run branch.
+- Nothing gets pushed unless the user authorized that exact push.
+- While the user is away: produce branches, evidence, and a status report — not
+  irreversible actions.
