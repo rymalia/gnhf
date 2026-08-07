@@ -48,6 +48,37 @@ Examples:
 - English: "Run GNHF for a few rounds on this onboarding flow. Check the diff between rounds and tighten the next prompt if it starts polishing the wrong thing."
 - Chinese: "用 GNHF 多跑几轮这个 onboarding 流程。每轮看一下 diff，如果它开始改偏了，就收窄下一轮 prompt。"
 
+## Operational rails (read before launching anything unattended)
+
+Full reference, with the incident evidence behind each rule:
+**[/Users/rymalia/projects/docs/gnhf-guide.md](/Users/rymalia/projects/docs/gnhf-guide.md)**
+
+Five rules that were learned the expensive way. Do not rediscover them.
+
+1. **Launch in detached tmux, never as a background Bash task.** Background tasks get
+   killed mid-work.
+   `tmux new-session -d -s gnhf-<name> -c <worktree> "sh <launcher> >> <log> 2>&1"`
+2. **A finished run is indistinguishable from a hung one by process inspection.** gnhf keeps
+   its TUI alive after completing, so it stays alive, burns CPU, refreshes its log mtime, and
+   has no worker child. **Read the log before judging:**
+   `strings <log> | grep -nE "stop condition|You've hit your|limit"` —
+   `stop condition` = finished (grep the short phrase; the TUI wraps mid-word),
+   a limit message = blocked not hung, neither = actually hung.
+   Progress is **commit count + notes-file mtime moving**; nothing else counts.
+3. **gnhf has no quota awareness and no agent fallback** (verified against source). Use
+   `codexbar guard --provider <p> --min-remaining N` to gate, and note two traps: Codex has
+   **no session window** (guard it on `weekly`), and codexbar **cannot see the Claude monthly
+   spend limit** — only the run's own log catches that.
+4. **Run the watchdog from launchd, not from inside an agent turn.** A supervising agent that
+   gets blocked stops recording, so the outage becomes invisible.
+   `~/projects/scripts/gnhf-watchdog.sh` + `com.rymalia.gnhf-watchdog.plist`.
+5. **Never trust the run's own notes.** Re-run the suites yourself, reproduce one
+   falsification, and check scope structurally (`git show --name-only`,
+   `git branch -r --contains HEAD`).
+
+Write prompts **continuation-safe** ("continue from the current repo state") so a run can be
+rerouted to another agent by editing `--agent` in its launcher and relaunching.
+
 ## Launch
 
 Check the installed CLI before relying on flags:
@@ -146,11 +177,18 @@ Use when the user returns with "good morning", "how did last night's run go?", o
 Do not ask what to review first. Reconstruct state:
 
 ```bash
+tmux ls || true
+sh ~/projects/scripts/gnhf-watchdog.sh          # or: tail -100 ~/.gnhf-watchdog/watchdog.log
+grep SUMMARY ~/.gnhf-watchdog/watchdog.log      # whole night, one screen
 git status --short
 git branch --show-current
 git log --oneline --decorate --max-count=20
-pgrep -fl 'gnhf|claude|codex|copilot|opencode|rovodev' || true
 ```
+
+Then, per run, check the **log** before concluding anything about a process that looks idle
+(see Operational rails #2) — an alive process with no worker child is most often a run that
+*finished*, and a run that produced nothing was most often *blocked by a provider limit*
+whose message is sitting in its own log.
 
 Inspect likely GNHF branches, notes, logs, terminal sessions, and changed files. If a GNHF process is still running, report that first.
 
@@ -158,7 +196,7 @@ Report mode, agent, branch, status, changes, verification, stop-condition result
 
 ## Agent
 
-The supported `--agent` roster comes from `gnhf --help`; the [Agents table](../../README.md#agents) in the GNHF README owns per-agent requirements. Do not hard-code the roster.
+The supported `--agent` roster comes from `gnhf --help`; the [Agents table](/Users/rymalia/projects/gnhf/README.md#agents) in the GNHF README owns per-agent requirements. Do not hard-code the roster.
 
 - Default to the agent the user explicitly requested, or the one already configured and authenticated locally.
 - `codex`: repo-aware code work or review-heavy tasks.
