@@ -48,14 +48,28 @@ always re-verifies before presenting the result as done.
 ## Launch — the run must not live in the harness's process tree
 
 A run inside an agent's process tree dies with the agent's turn (observed: background
-Bash tasks killed mid-work when a provider limit aborted the turn). Two equally valid
-launch patterns:
+Bash tasks killed mid-work when a provider limit aborted the turn).
 
-1. **User-launched** (simplest when the user is present): hand them the exact command
-   to run in their own terminal; the host then monitors. Survivability is free.
-2. **Agent-launched**: detached tmux, one launcher script per run so a reroute is a
-   one-line edit. Keep the prompt in its own file — heredocs inside `$( )` break under
-   `/bin/sh`.
+**The user launches; the host hands over the command.** Standing rule (Ryan,
+2026-08-10, after a captain agent-launched a run uninvited — supersedes the earlier
+"two equally valid patterns" wording). Perform the pre-launch checks, then hand the
+user ONE complete copy-paste command for their own terminal — prompt piped from its
+committed file, all flags inline:
+
+```bash
+cat docs/planning/gnhf-runs/<run>.md | gnhf --agent codex \
+  --max-iterations <n> --max-tokens <n> --prevent-sleep on \
+  --meteor-frequency 0 --stop-when "<checklist-backed condition>"
+```
+
+The host then monitors; survivability is free. The SAME rule applies to resumes and
+reroutes: edit the command, hand it back to the user.
+
+**Agent-launched (detached tmux) ONLY when the user explicitly asks the host to
+launch** — never as a default, and never inferred from an approval to "launch" in a
+plan (that approves the run, not the host executing it): one launcher script per run
+so a reroute is a one-line edit. Keep the prompt in its own file — heredocs inside
+`$( )` break under `/bin/sh`.
 
    ```bash
    tmux new-session -d -s gnhf-<name> -c <dir> "sh <launcher.sh> >> <log> 2>&1"
