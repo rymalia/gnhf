@@ -201,6 +201,13 @@ real problem at least once:
 6. Decide: **Mergeable** / **Needs a follow-up bounded run** / **Do not merge**. Never
    merge without explicit authorization. Reword gnhf's own commit subjects
    (`gnhf 1: …`) before anything becomes a PR.
+7. **Tag the finish before merging** (standing rule, Ryan 2026-08-12): once a run is
+   accepted, create an annotated `run-<NN>-final` tag on the run's final commit
+   (branch tip) *before* the merge, naming what the run delivered and how it landed.
+   This is the only thing that survives every merge strategy — a squash landing whose
+   branch is later deleted orphans the per-iteration history entirely (runs 05/05b
+   lost theirs this way; runs 01–06b were tagged retroactively 2026-08-12, 05/05b
+   only at their squash commit).
 
 When the user returns with findings, convert each into an observable correction
 (preserve their wording and scope), relaunch on the same branch with the finding as
