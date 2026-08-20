@@ -96,6 +96,31 @@ function parseNonNegativeInteger(value: string): number {
   return parsed;
 }
 
+function parseDuration(value: string): number {
+  if (value === "0") return 0;
+
+  const match = /^(\d+)(ms|s|m|h|d)$/i.exec(value);
+  if (!match) {
+    throw new InvalidArgumentError(
+      'must be a duration such as "30m", "2h", or "0"',
+    );
+  }
+
+  const amount = Number.parseInt(match[1]!, 10);
+  const multiplier = {
+    ms: 1,
+    s: 1_000,
+    m: 60_000,
+    h: 60 * 60_000,
+    d: 24 * 60 * 60_000,
+  }[match[2]!.toLowerCase()]!;
+  const duration = amount * multiplier;
+  if (!Number.isSafeInteger(duration)) {
+    throw new InvalidArgumentError("must be a safe duration");
+  }
+  return duration;
+}
+
 function parseMeteorFrequency(value: string): number {
   const parsed = parseNonNegativeInteger(value);
   if (parsed > MAX_METEOR_FREQUENCY) {
@@ -571,6 +596,11 @@ program
     parseNonNegativeInteger,
   )
   .option(
+    "--max-rate-limit-wait <duration>",
+    'Abort after this much total usage-limit wait (e.g. "30m", "2h", or "0")',
+    parseDuration,
+  )
+  .option(
     "--stop-when <condition>",
     'End when the agent reports this condition, after any commit-failure repair; resumes reuse it, pass a new value to overwrite or "" to clear',
   )
@@ -608,6 +638,7 @@ program
         agent?: string;
         maxIterations?: number;
         maxTokens?: number;
+        maxRateLimitWait?: number;
         stopWhen?: string;
         preventSleep?: boolean;
         worktree: boolean;
@@ -695,6 +726,22 @@ program
       let effectiveCwd = cwd;
       let worktreePath: string | null = null;
       let worktreeCleanup: (() => void) | null = null;
+      let getOrchestratorState:
+        | (() => ReturnType<Orchestrator["getState"]>)
+        | null = null;
+      const shouldPreserveWorktree = (): boolean => {
+        try {
+          const state = getOrchestratorState?.();
+          if (!state) return false;
+          return (
+            state.commitCount > 0 || state.hasPendingCommitFailure === true
+          );
+        } catch {
+          // Orchestrator not yet created or already torn down - safe to
+          // clean up since no iteration could have committed anything.
+          return false;
+        }
+      };
 
       const currentBranch = getCurrentBranch(cwd);
       const onGnhfBranch = currentBranch.startsWith("gnhf/");
@@ -765,11 +812,14 @@ program
           // Ensure worktree cleanup runs even if die() or process.exit() is
           // called before reaching the normal cleanup block (e.g. orchestrator
           // crash to .catch to die to process.exit(1)).
+          // However, preserve worktrees that already have commits - the
+          // normal preservation block (worktreeCleanup = null) may not have
+          // run yet when force-shutdown or timeout triggers process.exit().
           const exitCleanup = worktreeCleanup;
           process.on("exit", () => {
-            if (worktreeCleanup === exitCleanup) {
-              exitCleanup();
-            }
+            if (worktreeCleanup !== exitCleanup) return;
+            if (shouldPreserveWorktree()) return;
+            exitCleanup();
           });
         }
       } else if (options.currentBranch) {
@@ -902,6 +952,9 @@ program
             }));
           if (sleepPrevention.type === "reexeced") {
             reexeced = true;
+            // The re-execed child now owns the worktree lifecycle. Do not let
+            // this wrapper process remove it from its exit handler.
+            worktreeCleanup = null;
             process.exit(sleepPrevention.exitCode);
           }
           if (sleepPrevention.type === "active") {
@@ -940,6 +993,7 @@ program
         startIteration,
         maxIterations: options.maxIterations,
         maxTokens: options.maxTokens,
+        maxRateLimitWaitMs: options.maxRateLimitWait,
         stopWhen: effectiveStopWhen,
         commitMessage: effectiveCommitMessage,
         preventSleep: config.preventSleep,
@@ -977,9 +1031,13 @@ program
           maxIterations: options.maxIterations,
           maxTokens: options.maxTokens,
           stopWhen: effectiveStopWhen,
+          ...(options.maxRateLimitWait === undefined
+            ? {}
+            : { maxRateLimitWaitMs: options.maxRateLimitWait }),
           ...(options.push ? { push: true } : {}),
         },
       );
+      getOrchestratorState = () => orchestrator.getState();
       let shutdownSignal: NodeJS.Signals | null = null;
       let forceShutdownRequested = false;
 
@@ -1065,6 +1123,9 @@ program
           console.error(
             `\n  gnhf: shutdown timed out after ${FORCE_EXIT_TIMEOUT_MS / 1000}s, forcing exit\n`,
           );
+          if (worktreePath && shouldPreserveWorktree()) {
+            console.error(`  gnhf: worktree preserved at ${worktreePath}\n`);
+          }
           process.exit(getSignalExitCode(shutdownSignal ?? "SIGINT"));
         }
       } finally {

@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CONVENTIONAL_COMMIT_MESSAGE } from "./core/commit-message.js";
 import type { Config } from "./core/config.js";
@@ -22,6 +22,7 @@ const TEST_AGENT_NAMES = [
   "opencode",
   "copilot",
   "pi",
+  "cursor",
 ];
 const TEST_IS_AGENT_SPEC = (name: string) => {
   if (TEST_AGENT_NAMES.includes(name)) return true;
@@ -80,6 +81,7 @@ interface CliMockOverrides {
     close: ReturnType<typeof vi.fn>;
   };
   stdinIsTTY?: boolean;
+  consoleErrorSink?: unknown[][];
 }
 
 async function runCliWithMocks(
@@ -91,7 +93,11 @@ async function runCliWithMocks(
   const stdoutWrite = vi
     .spyOn(process.stdout, "write")
     .mockImplementation(() => true);
-  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  const consoleError = vi
+    .spyOn(console, "error")
+    .mockImplementation((...args: unknown[]) => {
+      overrides.consoleErrorSink?.push(args);
+    });
   const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
     code?: string | number | null,
   ) => {
@@ -1072,7 +1078,15 @@ describe("cli", () => {
 
   it("passes max iteration and token caps to the orchestrator", async () => {
     const { orchestratorCtor } = await runCliWithMocks(
-      ["ship it", "--max-iterations", "12", "--max-tokens", "3456"],
+      [
+        "ship it",
+        "--max-iterations",
+        "12",
+        "--max-tokens",
+        "3456",
+        "--max-rate-limit-wait",
+        "90m",
+      ],
       {
         agent: "claude",
         agentPathOverride: {},
@@ -1087,6 +1101,7 @@ describe("cli", () => {
     expect(orchestratorCtor.mock.calls[0]?.[6]).toEqual({
       maxIterations: 12,
       maxTokens: 3456,
+      maxRateLimitWaitMs: 90 * 60_000,
     });
   });
 
@@ -3212,6 +3227,90 @@ describe("cli", () => {
     );
 
     expect(removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("preserves and reports a worktree with commits when exit handler fires before preservation block", async () => {
+    vi.useFakeTimers();
+    const removeWorktree = vi.fn();
+    const createWorktree = vi.fn();
+    const consoleErrorSink: unknown[][] = [];
+    const exitHandlers: (() => void)[] = [];
+    const processOnSpy = vi.spyOn(process, "on");
+    processOnSpy.mockImplementation(((event: string, handler: () => void) => {
+      if (event === "exit") {
+        exitHandlers.push(handler);
+      }
+      return process;
+    }) as typeof process.on);
+
+    try {
+      const cliPromise = runCliWithMocks(
+        ["ship it", "--worktree"],
+        {
+          agent: "claude",
+          agentPathOverride: {},
+          agentArgsOverride: {},
+          acpRegistryOverrides: {},
+          maxConsecutiveFailures: 3,
+          preventSleep: false,
+        },
+        {
+          removeWorktree,
+          createWorktree,
+          consoleErrorSink,
+          orchestratorStart: vi.fn(() => new Promise<void>(() => {})),
+          orchestratorGetState: vi.fn(() => ({
+            status: "completed" as const,
+            gracefulStopRequested: false,
+            currentIteration: 2,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            commitCount: 3,
+            iterations: [],
+            successCount: 2,
+            failCount: 0,
+            consecutiveFailures: 0,
+            startTime: new Date("2026-01-01T00:00:00Z"),
+            waitingUntil: null,
+            lastMessage: null,
+          })),
+        },
+      );
+      const exitPromise = expect(cliPromise).rejects.toThrow(
+        "process.exit unexpectedly called with 1",
+      );
+
+      await vi.waitFor(() => {
+        expect(exitHandlers).toHaveLength(1);
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await exitPromise;
+
+      // process.exit() synchronously runs exit handlers before control can
+      // reach the normal preservation block that nulls worktreeCleanup.
+      for (const handler of exitHandlers) {
+        handler();
+      }
+
+      expect(removeWorktree).not.toHaveBeenCalled();
+
+      const createdWorktreePath = createWorktree.mock.calls[0]?.[1] as string;
+      expect(isAbsolute(createdWorktreePath)).toBe(true);
+      const timeoutOutput = consoleErrorSink.map((call) => call.join(" "));
+      expect(
+        timeoutOutput.some((line) => line.includes("shutdown timed out")),
+      ).toBe(true);
+      expect(
+        timeoutOutput.some(
+          (line) =>
+            line.includes("worktree preserved at") &&
+            line.includes(createdWorktreePath),
+        ),
+      ).toBe(true);
+    } finally {
+      processOnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("resumes a preserved suffixed worktree instead of creating another one", async () => {

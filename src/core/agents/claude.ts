@@ -9,9 +9,15 @@ import {
   type AgentRunOptions,
   type TokenUsage,
   PermanentAgentError,
+  RateLimitAgentError,
 } from "./types.js";
 import { shutdownChildProcess } from "./managed-process.js";
-import { parseJSONLStream, setupAbortHandler } from "./stream-utils.js";
+import {
+  appendExitOutputTail,
+  describeChildProcessExit,
+  parseJSONLStream,
+  setupAbortHandler,
+} from "./stream-utils.js";
 
 const DEFAULT_FINAL_RESULT_EXIT_GRACE_MS = 15_000;
 
@@ -32,6 +38,7 @@ interface ClaudeResultEvent {
   type: "result";
   subtype: string;
   is_error?: boolean;
+  result?: string;
   total_cost_usd: number;
   usage: {
     input_tokens: number;
@@ -42,7 +49,19 @@ interface ClaudeResultEvent {
   structured_output: AgentOutput | null;
 }
 
-type ClaudeEvent = ClaudeAssistantEvent | ClaudeResultEvent | { type: string };
+interface ClaudeRateLimitEvent {
+  type: "rate_limit_event";
+  rate_limit_info?: {
+    status?: string;
+    resetsAt?: number;
+  };
+}
+
+type ClaudeEvent =
+  | ClaudeAssistantEvent
+  | ClaudeResultEvent
+  | ClaudeRateLimitEvent
+  | { type: string };
 
 interface ClaudeAgentDeps {
   bin?: string;
@@ -192,8 +211,24 @@ function extendsUsage(next: TokenUsage, previous: TokenUsage): boolean {
   );
 }
 
-function isPermanentClaudeError(stderr: string): boolean {
-  return /credit balance\s+is\s+too\s+low/i.test(stderr);
+function isPermanentClaudeError(output: string): boolean {
+  return /credit balance\s+is\s+too\s+low/i.test(output);
+}
+
+function buildRateLimitError(
+  resetsAtEpochSeconds: number | null,
+  detail: string,
+): RateLimitAgentError {
+  const resumeAt =
+    resetsAtEpochSeconds === null
+      ? null
+      : new Date(resetsAtEpochSeconds * 1000);
+  const until = resumeAt === null ? "" : ` until ${resumeAt.toISOString()}`;
+  return new RateLimitAgentError(
+    `claude usage limit reached${until}`,
+    detail,
+    resumeAt,
+  );
 }
 
 export class ClaudeAgent implements Agent {
@@ -249,9 +284,12 @@ export class ClaudeAgent implements Agent {
       let resultEvent: ClaudeResultEvent | null = null;
       let finalStructuredResultEvent: ClaudeResultEvent | null = null;
       let latestResultUsage: ClaudeResultEvent["usage"] | null = null;
+      let rateLimitRejected = false;
+      let rateLimitResetsAt: number | null = null;
       let finalResultCleanupTimer: ReturnType<typeof setTimeout> | null = null;
       let closedAfterFinalCleanup = false;
       let stderr = "";
+      let stdoutTail = "";
       const cumulative: TokenUsage = {
         inputTokens: 0,
         outputTokens: 0,
@@ -266,6 +304,10 @@ export class ClaudeAgent implements Agent {
 
       child.stderr!.on("data", (data: Buffer) => {
         stderr += data.toString();
+      });
+
+      child.stdout!.on("data", (data: Buffer) => {
+        stdoutTail = appendExitOutputTail(stdoutTail, data.toString());
       });
 
       child.on("error", (err) => {
@@ -361,6 +403,20 @@ export class ClaudeAgent implements Agent {
           }
         }
 
+        if (event.type === "rate_limit_event") {
+          const info = (event as ClaudeRateLimitEvent).rate_limit_info;
+          if (info?.status === "rejected") {
+            rateLimitRejected = true;
+            rateLimitResetsAt =
+              typeof info.resetsAt === "number" ? info.resetsAt : null;
+          } else {
+            // A later allowed event means the limiter recovered; any failure
+            // after this point is not a rate-limit failure.
+            rateLimitRejected = false;
+            rateLimitResetsAt = null;
+          }
+        }
+
         if (event.type === "result") {
           const next = event as ClaudeResultEvent;
           latestResultUsage = next.usage;
@@ -391,14 +447,23 @@ export class ClaudeAgent implements Agent {
         }
         logStream?.end();
         if (code !== 0 && !closedAfterFinalCleanup) {
-          const detail = `claude exited with code ${code}: ${stderr}`;
+          const failure = describeChildProcessExit(
+            "claude",
+            code,
+            stdoutTail,
+            stderr,
+          );
+          if (rateLimitRejected) {
+            reject(buildRateLimitError(rateLimitResetsAt, failure.detail));
+            return;
+          }
           reject(
-            isPermanentClaudeError(stderr)
+            isPermanentClaudeError(failure.errorOutput)
               ? new PermanentAgentError(
                   "claude credit balance too low - see gnhf.log",
-                  detail,
+                  failure.detail,
                 )
-              : new Error(detail),
+              : new Error(failure.detail),
           );
           return;
         }
@@ -414,11 +479,12 @@ export class ClaudeAgent implements Agent {
           terminalResultEvent.is_error ||
           terminalResultEvent.subtype !== "success"
         ) {
-          reject(
-            new Error(
-              `claude reported error: ${JSON.stringify(terminalResultEvent)}`,
-            ),
-          );
+          const detail = `claude reported error: ${JSON.stringify(terminalResultEvent)}`;
+          if (rateLimitRejected) {
+            reject(buildRateLimitError(rateLimitResetsAt, detail));
+            return;
+          }
+          reject(new Error(detail));
           return;
         }
 

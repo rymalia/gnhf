@@ -1,3 +1,5 @@
+import { parseAgentJson } from "./json-extract.js";
+
 export interface AgentOutput {
   success: boolean;
   summary: string;
@@ -78,6 +80,33 @@ export function validateAgentOutput(
   return value as unknown as AgentOutput;
 }
 
+export function parseAgentOutput(
+  text: string,
+  schema: AgentOutputSchema,
+  agentLabel: string,
+): AgentOutput {
+  const parsed = parseAgentJson(text, (value) => {
+    try {
+      validateAgentOutput(value, schema);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (parsed !== null) {
+    return validateAgentOutput(parsed, schema);
+  }
+
+  const fallbackParsed = parseAgentJson(text);
+  if (fallbackParsed !== null) {
+    return validateAgentOutput(fallbackParsed, schema);
+  }
+
+  throw new SyntaxError(
+    `${agentLabel} output did not contain a parseable JSON object`,
+  );
+}
+
 export interface AgentOutputCommitField {
   name: string;
   allowed?: string[];
@@ -139,6 +168,22 @@ export class PermanentAgentError extends Error {
     super(message, { cause: detail });
     this.name = "PermanentAgentError";
     this.detail = detail;
+  }
+}
+
+// The provider rejected the request because a usage window is exhausted
+// (e.g. the Claude subscription 5-hour window). Unlike retryable errors this
+// carries the provider-reported reset time so the orchestrator can wait for
+// the window to reset instead of burning the consecutive-failure budget.
+export class RateLimitAgentError extends Error {
+  detail: string;
+  resumeAt: Date | null;
+
+  constructor(message: string, detail: string, resumeAt: Date | null) {
+    super(message, { cause: detail });
+    this.name = "RateLimitAgentError";
+    this.detail = detail;
+    this.resumeAt = resumeAt;
   }
 }
 
