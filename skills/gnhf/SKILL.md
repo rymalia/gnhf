@@ -201,13 +201,24 @@ real problem at least once:
 6. Decide: **Mergeable** / **Needs a follow-up bounded run** / **Do not merge**. Never
    merge without explicit authorization. Reword gnhf's own commit subjects
    (`gnhf 1: …`) before anything becomes a PR.
-7. **Tag the finish before merging** (standing rule, Ryan 2026-08-12): once a run is
-   accepted, create an annotated `run-<NN>-final` tag on the run's final commit
-   (branch tip) *before* the merge, naming what the run delivered and how it landed.
-   This is the only thing that survives every merge strategy — a squash landing whose
-   branch is later deleted orphans the per-iteration history entirely (runs 05/05b
-   lost theirs this way; runs 01–06b were tagged retroactively 2026-08-12, 05/05b
-   only at their squash commit).
+7. **Land with `--no-ff`, then tag the finish** (standing rule, Ryan 2026-08-12).
+   Merge an accepted run with an explicit merge commit — `git merge --no-ff -m
+   "Merge <run>: …"` — **never `--squash`, never a fast-forward**. `--no-ff` keeps
+   the run-branch tip an **ancestor** of the target, so every per-iteration commit
+   stays reachable and any recorded evidence that names a run commit (e.g. a
+   tested/verified commit) stays valid; a squash produces an identical tree with
+   **no ancestry** and silently orphans both. **Any host project that binds
+   verification to commit ancestry MUST use `--no-ff`.** Then create an annotated
+   `run-<NN>-final` tag on the run's final commit (branch tip), naming what the run
+   delivered and how it landed — the tag is the one marker that survives every
+   strategy, and the *only* survivor if a run is ever squash-landed (runs 05/05b
+   were, and lost their per-iteration history that way until the tag; 01–06b were
+   tagged retroactively 2026-08-12). An unpushed squash mis-land is recoverable:
+   reconstruct it as a proper `--no-ff` merge on the still-unpublished tail before
+   anything is pushed.
+
+A host project may layer its own land/review/repair policy on top of this; when it
+does, follow it (in `standup`, `docs/agents/gnhf-captain-protocol.md`).
 
 When the user returns with findings, convert each into an observable correction
 (preserve their wording and scope), relaunch on the same branch with the finding as
