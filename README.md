@@ -203,19 +203,19 @@ If you run `gnhf` on an existing `gnhf/` branch with a different prompt, gnhf as
 
 ### Flags
 
-| Flag                     | Description                                                                                        | Default                |
-| ------------------------ | -------------------------------------------------------------------------------------------------- | ---------------------- |
-| `--agent <agent>`        | Agent to use: a native agent name or `acp:<target-or-command>`; see [Agents](#agents)              | config file (`claude`) |
-| `--max-iterations <n>`   | Abort after `n` total iterations                                                                   | unlimited              |
-| `--max-tokens <n>`       | Abort after `n` total input+output tokens                                                          | unlimited              |
-| `--max-rate-limit-wait <duration>` | Abort after this much total Claude usage-limit wait (`30m`, `2h`, or `0`)                     | 24h safety cap          |
-| `--stop-when <cond>`     | End when the agent reports this condition, after any commit-failure repair; persists across resume | unlimited              |
-| `--prevent-sleep <mode>` | Prevent system sleep during the run (`on`/`off` or `true`/`false`)                                 | config file (`on`)     |
-| `--worktree`             | Run in a separate git worktree (enables multiple agents concurrently)                              | `false`                |
-| `--current-branch`       | Run on the current branch instead of creating a `gnhf/` branch                                     | `false`                |
-| `--push`                 | Push the current branch after each successful iteration                                            | `false`                |
-| `--meteor-frequency <n>` | Set TUI meteor frequency from 0 to 5 (`0` disables meteors)                                        | `3`                    |
-| `--version`              | Show version                                                                                       |                        |
+| Flag                               | Description                                                                                        | Default                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------- |
+| `--agent <agent>`                  | Agent to use: a native agent name or `acp:<target-or-command>`; see [Agents](#agents)              | config file (`claude`) |
+| `--max-iterations <n>`             | Abort after `n` total iterations                                                                   | unlimited              |
+| `--max-tokens <n>`                 | Abort after `n` total input+output tokens                                                          | unlimited              |
+| `--max-rate-limit-wait <duration>` | Abort after this much total Claude usage-limit wait (`30m`, `2h`, or `0`)                          | 24h safety cap         |
+| `--stop-when <cond>`               | End when the agent reports this condition, after any commit-failure repair; persists across resume | unlimited              |
+| `--prevent-sleep <mode>`           | Prevent system sleep during the run (`on`/`off` or `true`/`false`)                                 | config file (`on`)     |
+| `--worktree`                       | Run in a separate git worktree (enables multiple agents concurrently)                              | `false`                |
+| `--current-branch`                 | Run on the current branch instead of creating a `gnhf/` branch                                     | `false`                |
+| `--push`                           | Push the current branch after each successful iteration                                            | `false`                |
+| `--meteor-frequency <n>`           | Set TUI meteor frequency from 0 to 5 (`0` disables meteors)                                        | `3`                    |
+| `--version`                        | Show version                                                                                       |                        |
 
 ## Configuration
 
@@ -316,7 +316,11 @@ agentPathOverride:
 ```
 
 Paths may be absolute, bare executable names already on your `PATH`, `~`-prefixed, or relative to the config directory (`~/.gnhf/`). The override replaces only the binary name; all standard arguments are preserved, so the replacement must be CLI-compatible with the original agent. On Windows, `.cmd` and `.bat` wrappers are supported, including bare names resolved from `PATH`. For `rovodev`, the override must point to an `acli`-compatible binary since gnhf invokes it as `<bin> rovodev serve ...`.
+
+### Sleep Prevention
+
 When sleep prevention is enabled, `gnhf` uses the native mechanism for your OS: `caffeinate` on macOS, `systemd-inhibit` on Linux, and a small PowerShell helper backed by `SetThreadExecutionState` on Windows.
+A run is never aborted because that mechanism is unavailable; instead the exit summary adds a `sleep` line reporting either that prevention could not be started for the run, or that the helper started but never confirmed it was holding the machine awake, so the machine may have slept.
 
 ## Debug Logs
 
@@ -348,7 +352,7 @@ Set `GNHF_TELEMETRY=0` to turn it off.
 
 ## Development
 
-If you want to contribute changes back to this repo, see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow, the dev commands, and repo conventions. Human-authored PRs targeting `main` must be opened via `git push no-mistakes` so the required `Require no-mistakes` check passes.
+If you want to contribute changes back to this repo, see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the required workflow, dev commands, and repo conventions.
 
 ## Star History
 
